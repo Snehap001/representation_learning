@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
 from torch.utils.data import Dataset
 from PIL import Image
-
+import matplotlib.pyplot as plt
 import pickle
 
 def save_gmm_parameters(gmm, filename="gmm.params.pkl"):
@@ -58,28 +58,28 @@ class VAE(nn.Module):
     def __init__(self, input_dim, hidden_dim, latent_dim):
         super(VAE, self).__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.bn1 = nn.BatchNorm1d(hidden_dim)  # Batch norm after first layer
+        # self.bn1 = nn.BatchNorm1d(hidden_dim)  # Batch norm after first layer
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.bn2 = nn.BatchNorm1d(hidden_dim)  # Batch norm after second layer
+        # self.bn2 = nn.BatchNorm1d(hidden_dim)  # Batch norm after second layer
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
-        self.bn3 = nn.BatchNorm1d(hidden_dim)  # Batch norm after third layer
+        # self.bn3 = nn.BatchNorm1d(hidden_dim)  # Batch norm after third layer
         self.fc_mu = nn.Linear(hidden_dim, latent_dim)
         self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
 
         # Decoder network
         self.fc4 = nn.Linear(latent_dim, hidden_dim)
-        self.bn4 = nn.BatchNorm1d(hidden_dim)  # Batch norm after fourth layer
+        # self.bn4 = nn.BatchNorm1d(hidden_dim)  # Batch norm after fourth layer
         self.fc5 = nn.Linear(hidden_dim, hidden_dim)
-        self.bn5 = nn.BatchNorm1d(hidden_dim)  # Batch norm after fifth layer
+        # self.bn5 = nn.BatchNorm1d(hidden_dim)  # Batch norm after fifth layer
         self.fc6 = nn.Linear(hidden_dim, hidden_dim)
-        self.bn6 = nn.BatchNorm1d(hidden_dim)  # Batch norm after sixth layer
+        # self.bn6 = nn.BatchNorm1d(hidden_dim)  # Batch norm after sixth layer
         self.fc7 = nn.Linear(hidden_dim, input_dim)
 
 
     def encode(self, x):
-        h1 = F.relu(self.bn1(self.fc1(x)))
-        h2 = F.relu(self.bn2(self.fc2(h1)))
-        h3 = F.relu(self.bn3(self.fc3(h2)))
+        h1 = F.relu(self.fc1(x))
+        h2 = F.relu(self.fc2(h1))
+        h3 = F.relu(self.fc3(h2))
         mu = self.fc_mu(h3)
         logvar = self.fc_logvar(h3)
         return mu, logvar
@@ -90,10 +90,10 @@ class VAE(nn.Module):
         return mu + eps * std
     
     def decode(self, z):
-        h4 = F.relu(self.bn4(self.fc4(z)))
-        h5 = F.relu(self.bn5(self.fc5(h4)))
-        h6 = F.relu(self.bn6(self.fc6(h5)))
-        return torch.sigmoid(self.fc7(h6))
+        h4 = F.relu(self.fc4(z))
+        h5 = F.relu(self.fc5(h4))
+        h6 = F.relu(self.fc6(h5))
+        return F.softmax(self.fc7(h6), dim=1)
     
     def forward(self, x):
         x = x.view(-1, 784)  # Flatten input images to vectors
@@ -105,8 +105,8 @@ class VAE(nn.Module):
 
 # VAE Loss Function
 def loss_function(recon_x, x, mu, logvar):
-    
-    BCE = F.binary_cross_entropy(recon_x.view(-1, 784), x.view(-1, 784), reduction='sum')
+
+    BCE = F.binary_cross_entropy(recon_x.view(-1, 784), x.view(-1, 784), reduction='mean')
     KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     # print(f"BCE: {BCE}")
     # print(f"KLD: {KLD}")
@@ -199,6 +199,30 @@ def calculate_initial_means(val_loader, model, keep_labels=[1, 4, 8]):
             initial_means.append(class_mean)
     
     return torch.stack(initial_means)
+
+def display_reconstructed_images(model, data_loader, device, num_images=10):
+    model.eval()
+    with torch.no_grad():
+        for data, _ in data_loader:
+            data = data.to(device)
+            # Flatten the data and reconstruct using the VAE
+            recon_batch, _, _ = model(data)
+            # Reshape reconstructions and original data for viewing
+            original_images = data.view(-1, 28, 28).cpu().numpy()[:num_images]
+            reconstructed_images = recon_batch.view(-1, 28, 28).cpu().numpy()[:num_images]
+            break  # Only process the first batch for display
+
+    # Plot the original and reconstructed images
+    fig, axes = plt.subplots(2, num_images, figsize=(15, 3))
+    for i in range(num_images):
+        # Original images
+        axes[0, i].imshow(original_images[i], cmap='gray')
+        axes[0, i].axis('off')
+        # Reconstructed images
+        axes[1, i].imshow(reconstructed_images[i], cmap='gray')
+        axes[1, i].axis('off')
+    plt.suptitle("Top Row: Original Images | Bottom Row: Reconstructed Images")
+    plt.show()
 def extract_latent_vectors(data_loader, model):
     
     latent_vectors = []
@@ -213,6 +237,86 @@ def extract_latent_vectors(data_loader, model):
             latent_vectors.append(mu)
             labels.append(target)
     return torch.cat(latent_vectors), torch.cat(labels)
+
+def classify_image(image, vae_model, gmm_model):
+    vae_model.eval()
+    with torch.no_grad():
+        mu, _ = vae_model.encode(image.unsqueeze(0))  # Get latent vector for the image
+    max_likelihood, label = None, None
+    for i in range(gmm_model.n_clusters):
+        likelihood = gmm_model.weights[i] * gmm_model.gaussian_density(mu.squeeze(), gmm_model.means[i], gmm_model.covariances[i])
+        if max_likelihood is None or likelihood > max_likelihood:
+            max_likelihood = likelihood
+            label = i
+    return label
+
+def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePath):
+    # Training loop (example)
+    model.to(device)
+    for epoch in range(num_epochs):
+        model.train()
+        train_loss = 0
+        for batch_idx, (data, target) in enumerate(train_loader):
+
+            data = data.to(device)
+            target = target.to(device)
+            optimizer.zero_grad()
+            recon_batch, mu, logvar = model(data)
+    
+            loss = loss_function(recon_batch, data, mu, logvar)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+            
+
+        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {train_loss / len(train_loader):.4f}")
+        model.eval()
+        correct = 0
+        total = 0
+        validation_loss = 0
+        threshold=0.1
+        with torch.no_grad():
+            for batch_idx, (data, target) in enumerate(val_loader):
+                data = data.to(device)
+                recon_batch, mu, logvar = model(data)
+                # original_images = data.view(-1, 28, 28).cpu().numpy()[:2]
+                # reconstructed_images = recon_batch.view(-1, 28, 28).cpu().numpy()[:2]
+                # # Calculate loss
+                # fig, axes = plt.subplots(2, 2, figsize=(15, 3))
+                # for i in range(2):
+                #     # Original images
+                #     axes[0, i].imshow(original_images[i], cmap='gray')
+                #     axes[0, i].axis('off')
+                #     # Reconstructed images
+                #     axes[1, i].imshow(reconstructed_images[i], cmap='gray')
+                #     axes[1, i].axis('off')
+                # plt.suptitle("Top Row: Original Images | Bottom Row: Reconstructed Images")
+                # plt.show()
+                loss = loss_function(recon_batch, data, mu, logvar)
+                validation_loss += loss.item()
+                
+                # MSE accuracy
+                mse = F.mse_loss(recon_batch, data.view(-1,784), reduction='none')
+                mse_per_image = mse.view(mse.size(0), -1).mean(dim=1)  # Mean MSE per image
+                correct += (mse_per_image < threshold).sum().item()  # Count images with MSE < threshold
+                total += data.size(0)
+    
+            validation_accuracy = correct / total
+            print(f"Validation Loss: {validation_loss / len(val_loader):.4f}, Validation Accuracy: {validation_accuracy * 100:.2f}%")
+    torch.save(model.state_dict(), vaePath)
+
+    train_latent_vectors, train_labels = extract_latent_vectors(train_loader, model)
+    
+    initial_means = calculate_initial_means(train_loader, model)
+
+    # Initialize and train GMM
+    gmm = GaussianMixtureModel(n_clusters=3, initial_means=initial_means)
+    gmm.train(train_latent_vectors)
+    save_gmm_parameters(gmm, filename=gmmPath)
+
+
+
+
 if __name__ == "__main__":
     # Get command-line arguments
     arg1 = sys.argv[1]
@@ -228,9 +332,9 @@ if __name__ == "__main__":
     input_dim = 784  # 28x28 images flattened to 784 dimensions
     hidden_dim = 512
     latent_dim = 2
-    num_epochs = 10
+    num_epochs = 25
     learning_rate = 1e-3
-    batch_size = 64
+    batch_size = 128
 
     # Create the model and optimizer
     model = VAE(input_dim=input_dim, hidden_dim=hidden_dim, latent_dim=latent_dim).to(device)
@@ -267,34 +371,9 @@ if __name__ == "__main__":
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    print(f"arg1:{arg1}, arg2:{arg2}, arg3:{arg3}, arg4:{arg4}, arg5:{arg5}")
-    print(f"Device: {device}")
-    
-    # Training loop (example)
-    for epoch in range(num_epochs):
-        model.train()
-        train_loss = 0
-        for batch_idx, (data, target) in enumerate(train_loader):
+        train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePath)
+        # val_latent_vectors, val_labels = extract_latent_vectors(val_loader, model)  
+        display_reconstructed_images(model, train_loader, device)
 
-            data = data.to(device)
-            target = target.to(device)
-            optimizer.zero_grad()
-            recon_batch, mu, logvar = model.forward(data)
-     
-            loss = loss_function(recon_batch, data, mu, logvar)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
-            
 
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {train_loss / len(train_loader.dataset):.4f}")
-    torch.save(model.state_dict(), vaePath)
-
-    train_latent_vectors, train_labels = extract_latent_vectors(train_loader, model)
-    val_latent_vectors, val_labels = extract_latent_vectors(val_loader, model)  
-    initial_means = calculate_initial_means(val_loader, model)
-
-    # Initialize and train GMM
-    gmm = GaussianMixtureModel(n_clusters=3, initial_means=initial_means)
-    gmm.train(train_latent_vectors)
-    save_gmm_parameters(gmm, filename=gmmPath)
+        

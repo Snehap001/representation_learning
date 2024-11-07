@@ -141,7 +141,7 @@ class VAE(nn.Module):
 # VAE Loss Function
 def loss_function(recon_x, x, mu, logvar):
 
-    BCE = F.binary_cross_entropy(recon_x.view(-1, 784), x.view(-1, 784), reduction='mean')
+    BCE = F.binary_cross_entropy(recon_x.view(-1, 784), x.view(-1, 784), reduction='sum')
     KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     # print(f"BCE: {BCE}")
     # print(f"KLD: {KLD}")
@@ -308,6 +308,8 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
         with torch.no_grad():
             for _, (data, target) in enumerate(val_loader):
                 data = data.to(device)
+               
+                print(target)
                 recon_batch, mu, logvar = model(data)
                 # original_images = data.view(-1, 28, 28).cpu().numpy()[:2]
                 # reconstructed_images = recon_batch.view(-1, 28, 28).cpu().numpy()[:2]
@@ -324,7 +326,7 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
                 # plt.show()
                 loss = loss_function(recon_batch, data, mu, logvar)
                 validation_loss += loss.item()
-                
+               
                 # MSE accuracy
                 mse = F.mse_loss(recon_batch, data.view(-1,784), reduction='none')
                 mse_per_image = mse.view(mse.size(0), -1).mean(dim=1)  # Mean MSE per image
@@ -403,7 +405,7 @@ if __name__ == "__main__":
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
         print("Training...")
         train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePath)
-        # val_latent_vectors, val_labels = extract_latent_vectors(val_loader, model)  
-        # display_reconstructed_images(model, train_loader, device) 
+        show_reconstruction(model, val_loader)
+        plot_2d_manifold(model, latent_dim=2, n=20, digit_size=28, device=device)
 
         

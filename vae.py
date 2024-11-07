@@ -9,6 +9,38 @@ from torch.utils.data import Dataset
 from PIL import Image
 import matplotlib.pyplot as plt
 import pickle
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
+from scipy.stats import norm
+
+def plot_2d_manifold(vae, latent_dim=2, n=20, digit_size=28, device='cuda'):
+    figure = np.zeros((digit_size * n, digit_size * n))
+
+    # Generate a grid of values between 0.05 and 0.95 percentiles of a normal distribution
+    grid_x = norm.ppf(np.linspace(0.05, 0.95, n))
+    grid_y = norm.ppf(np.linspace(0.05, 0.95, n))
+
+    vae.eval()  # Set VAE to evaluation mode
+    with torch.no_grad():
+        for i, yi in enumerate(grid_x):
+            for j, xi in enumerate(grid_y):
+                z_sample = torch.tensor([[xi, yi]], device=device).float()
+                digit=vae.decode(z_sample)
+                # Pass z to VAE Decoder 
+                # Write your code here
+                digit=digit.reshape(28, 28)
+              
+                new_digit=digit
+                figure[i * digit_size: (i + 1) * digit_size,
+                       j * digit_size: (j + 1) * digit_size] =new_digit
+
+
+    plt.figure(figsize=(10, 10))
+    plt.imshow(figure, cmap='gnuplot2')
+    plt.axis('off')
+    plt.savefig("generated_images.png")
+
 
 def save_gmm_parameters(gmm, filename="gmm.params.pkl"):
     """
@@ -58,30 +90,47 @@ class VAE(nn.Module):
     def __init__(self, input_dim, hidden_dim, latent_dim):
         super(VAE, self).__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
-        # self.bn1 = nn.BatchNorm1d(hidden_dim)  # Batch norm after first layer
+        self.bn1 = nn.BatchNorm1d(hidden_dim)  # Batch norm after first layer
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        # self.bn2 = nn.BatchNorm1d(hidden_dim)  # Batch norm after second layer
+        self.bn2 = nn.BatchNorm1d(hidden_dim)  # Batch norm after second layer
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
-        # self.bn3 = nn.BatchNorm1d(hidden_dim)  # Batch norm after third layer
+        self.bn3 = nn.BatchNorm1d(hidden_dim)  # Batch norm after third layer
+        self.fc4 = nn.Linear(hidden_dim, hidden_dim)
+        self.bn4 = nn.BatchNorm1d(hidden_dim)
+        self.fc5 = nn.Linear(hidden_dim, hidden_dim)
+        self.bn5 = nn.BatchNorm1d(hidden_dim)
+        self.fc6 = nn.Linear(hidden_dim, hidden_dim)
+        self.bn6 = nn.BatchNorm1d(hidden_dim)
         self.fc_mu = nn.Linear(hidden_dim, latent_dim)
         self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
 
         # Decoder network
-        self.fc4 = nn.Linear(latent_dim, hidden_dim)
-        # self.bn4 = nn.BatchNorm1d(hidden_dim)  # Batch norm after fourth layer
-        self.fc5 = nn.Linear(hidden_dim, hidden_dim)
-        # self.bn5 = nn.BatchNorm1d(hidden_dim)  # Batch norm after fifth layer
-        self.fc6 = nn.Linear(hidden_dim, hidden_dim)
-        # self.bn6 = nn.BatchNorm1d(hidden_dim)  # Batch norm after sixth layer
-        self.fc7 = nn.Linear(hidden_dim, input_dim)
+        self.fc7 = nn.Linear(latent_dim, hidden_dim)
+        self.bn7 = nn.BatchNorm1d(hidden_dim)  # Batch norm after fourth layer
+        self.fc8 = nn.Linear(hidden_dim, hidden_dim)
+        self.bn8 = nn.BatchNorm1d(hidden_dim)  # Batch norm after fifth layer
+        self.fc9 = nn.Linear(hidden_dim, hidden_dim)
+        self.bn9 = nn.BatchNorm1d(hidden_dim)  # Batch norm after sixth layer
+        self.fc10 = nn.Linear(hidden_dim, hidden_dim)
+        self.bn10 = nn.BatchNorm1d(hidden_dim) 
+        self.fc11 = nn.Linear(hidden_dim, hidden_dim)
+        self.bn11 = nn.BatchNorm1d(hidden_dim) 
+        self.fc12 = nn.Linear(hidden_dim, hidden_dim)
+        self.bn12 = nn.BatchNorm1d(hidden_dim) 
+        self.fc13 = nn.Linear(hidden_dim, input_dim)
+      
 
 
     def encode(self, x):
-        h1 = F.relu(self.fc1(x))
-        h2 = F.relu(self.fc2(h1))
-        h3 = F.relu(self.fc3(h2))
-        mu = self.fc_mu(h3)
-        logvar = self.fc_logvar(h3)
+        x = F.relu(self.bn1(self.fc1(x)))
+        x = F.relu(self.bn2(self.fc2(x)))
+        x = F.relu(self.bn3(self.fc3(x)))
+        x = F.relu(self.bn4(self.fc4(x)))
+        x = F.relu(self.bn5(self.fc5(x)))
+        x = F.relu(self.bn6(self.fc6(x)))
+        mu = self.fc_mu(x)
+        logvar = self.fc_logvar(x)
+        
         return mu, logvar
     
     def reparameterize(self, mu, logvar):
@@ -90,10 +139,13 @@ class VAE(nn.Module):
         return mu + eps * std
     
     def decode(self, z):
-        h4 = F.relu(self.fc4(z))
-        h5 = F.relu(self.fc5(h4))
-        h6 = F.relu(self.fc6(h5))
-        return F.softmax(self.fc7(h6), dim=1)
+        z = F.relu(self.bn7(self.fc7(z)))
+        z = F.relu(self.bn8(self.fc8(z)))
+        z = F.relu(self.bn9(self.fc9(z)))
+        z = F.relu(self.bn10(self.fc10(z)))
+        z = F.relu(self.bn11(self.fc11(z)))
+        z = F.relu(self.bn12(self.fc12(z)))
+        return F.softmax(self.fc13(z), dim=1)
     
     def forward(self, x):
         x = x.view(-1, 784)  # Flatten input images to vectors
@@ -200,29 +252,24 @@ def calculate_initial_means(val_loader, model, keep_labels=[1, 4, 8]):
     
     return torch.stack(initial_means)
 
-def display_reconstructed_images(model, data_loader, device, num_images=10):
+def show_reconstruction(model, val_loader, n=10):
     model.eval()
-    with torch.no_grad():
-        for data, _ in data_loader:
-            data = data.to(device)
-            # Flatten the data and reconstruct using the VAE
-            recon_batch, _, _ = model(data)
-            # Reshape reconstructions and original data for viewing
-            original_images = data.view(-1, 28, 28).cpu().numpy()[:num_images]
-            reconstructed_images = recon_batch.view(-1, 28, 28).cpu().numpy()[:num_images]
-            break  # Only process the first batch for display
-
-    # Plot the original and reconstructed images
-    fig, axes = plt.subplots(2, num_images, figsize=(15, 3))
-    for i in range(num_images):
+    data, labels = next(iter(val_loader))
+    
+    data = data.to(device)
+    recon_data, _, _ = model(data)
+    
+    fig, axes = plt.subplots(2, n, figsize=(15, 4))
+    for i in range(n):
         # Original images
-        axes[0, i].imshow(original_images[i], cmap='gray')
+        axes[0, i].imshow(data[i].cpu().numpy().squeeze(), cmap='gray')
         axes[0, i].axis('off')
         # Reconstructed images
-        axes[1, i].imshow(reconstructed_images[i], cmap='gray')
+        axes[1, i].imshow(recon_data[i].cpu().view(28, 28).detach().numpy(), cmap='gray')
         axes[1, i].axis('off')
-    plt.suptitle("Top Row: Original Images | Bottom Row: Reconstructed Images")
-    plt.show()
+    plt.savefig("val_images.png")
+
+
 def extract_latent_vectors(data_loader, model):
     
     latent_vectors = []
@@ -266,6 +313,7 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
             loss = loss_function(recon_batch, data, mu, logvar)
             loss.backward()
             optimizer.step()
+          
             train_loss += loss.item()
             
 
@@ -334,7 +382,7 @@ if __name__ == "__main__":
     latent_dim = 2
     num_epochs = 25
     learning_rate = 1e-3
-    batch_size = 128
+    batch_size = 64
 
     # Create the model and optimizer
     model = VAE(input_dim=input_dim, hidden_dim=hidden_dim, latent_dim=latent_dim).to(device)
@@ -373,7 +421,8 @@ if __name__ == "__main__":
 
         train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePath)
         # val_latent_vectors, val_labels = extract_latent_vectors(val_loader, model)  
-        display_reconstructed_images(model, train_loader, device)
+        show_reconstruction(model, val_loader)
+        plot_2d_manifold(model, latent_dim=2, n=20, digit_size=28, device=device)
 
 
         

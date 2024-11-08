@@ -332,7 +332,7 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
             train_loss += loss.item()
             
 
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {train_loss / len(train_loader):.4f}")
+        print(f"Epoch [{epoch+1}/{num_epochs}]")
         model.eval()
         correct = 0
         total = 0
@@ -363,13 +363,16 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
                     if ssim_score > threshold:
                         correct += 1  # Count as correct if SSIM is above threshold
                     total += 1  # Total number of images
+                mse = F.mse_loss(recon_batch, data.view(-1,784), reduction='mean')
+
                 mean_ssim = sum(ssim_scores) / len(ssim_scores)
                 print(f"Mean SSIM Score: {mean_ssim:.4f}")
+                print("1- Mean Squared Error:", 1-mse.item())
 
             # Calculate validation accuracy and loss
             validation_accuracy = correct / total
             average_validation_loss = validation_loss / len(val_loader)
-            print(f"Validation Loss: {average_validation_loss:.4f}, Validation Accuracy: {validation_accuracy * 100:.2f}%")
+            print(f"Validation Accuracy: {validation_accuracy * 100:.2f}%")
             if validation_accuracy>best_val_accuracy:  
                 best_val_accuracy=validation_accuracy
                 print("model saved")
@@ -409,16 +412,16 @@ if __name__ == "__main__":
     input_dim = 784  # 28x28 images flattened to 784 dimensions
     hidden_dim = 512
     latent_dim = 2
-    num_epochs = 25
+    num_epochs = 50
     learning_rate = 1e-3
-    batch_size = 128
+    batch_size = 64
 
     print("Creating model...")
     # Create the model and optimizer
     model = VAE().to(device)
     num_params = sum(p.numel() for p in model.parameters())
     print(f"Total number of parameters: {num_params}")
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate,weight_decay=1e-5)
 
     # Loading dataset
     if len(sys.argv) == 4:  # VAE reconstruction

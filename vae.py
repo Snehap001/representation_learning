@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from scipy.stats import norm
+from skimage.metrics import structural_similarity as ssim
 
 def plot_2d_manifold(vae, latent_dim=2, n=20, digit_size=28, device='cuda'):
     figure = np.zeros((digit_size * n, digit_size * n))
@@ -235,7 +236,7 @@ def calculate_initial_means(val_loader, model, keep_labels=[1, 4, 8]):
     
     return torch.stack(initial_means)
 
-def show_reconstruction(model, val_loader, n=10):
+def show_reconstruction(model, val_loader, n=15):
     model.eval()
     data, labels = next(iter(val_loader))
     
@@ -251,22 +252,53 @@ def show_reconstruction(model, val_loader, n=10):
         axes[1, i].imshow(recon_data[i].cpu().view(28, 28).detach().numpy(), cmap='gray')
         axes[1, i].axis('off')
     plt.savefig("val_images.png")
+    # plt.show()
+
+def save_reconstruction(model,val_loader):
+    model.eval()
+    data, labels = next(iter(val_loader))
+    
+    data = data.to(device)
+    recon_data, _, _ = model(data)
+    recon_data_np = recon_data.cpu().detach().numpy()
+
+# Save the NumPy array to a .npz file
+    np.savez("vae_reconstructed.npz", recon_data=recon_data_np)
 
 
 def extract_latent_vectors(data_loader, model):
-    
     latent_vectors = []
     labels = []
+    model.eval()  # Set model to evaluation mode
+    
     with torch.no_grad():
         for data, target in data_loader:
+            # Ensure the batch is not empty
+            if data.size(0) == 0:
+                continue
             
-            data = data.to(device)
-            data = data.view(-1, 784)
-         
+            # Move data to the appropriate device and reshape if needed
+            data = data.to(device).view(-1, 784)
+            
+            # Pass data through the encoder to get the mean (mu) of the latent distribution
             mu, _ = model.encode(data)
-            latent_vectors.append(mu)
-            labels.append(target)
-    return torch.cat(latent_vectors), torch.cat(labels)
+            if mu.dim() == 0:
+                mu = mu.unsqueeze(0)  # Add a dimension to make it 1-dimensional
+            
+            # Ensure target has the right shape as well
+            if target.dim() == 0:
+                target = target.unsqueeze(0)
+            
+            # Ensure mu and target are on the CPU and append to lists
+            latent_vectors.append(mu.cpu())
+            labels.append(target.cpu())
+    
+    # Concatenate all latent vectors and labels if they have valid entries
+
+    if latent_vectors and labels:
+        return torch.cat(latent_vectors), torch.cat(labels)
+    else:
+        raise ValueError("No valid latent vectors or labels were extracted.")
 
 def classify_image(image, vae_model, gmm_model):
     vae_model.eval()
@@ -283,6 +315,7 @@ def classify_image(image, vae_model, gmm_model):
 def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePath):
     # Training loop (example)
     model.to(device)
+    best_val_accuracy=0.0
     for epoch in range(num_epochs):
         print(f"Epoch {epoch+1} started")
         model.train()
@@ -304,49 +337,62 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
         correct = 0
         total = 0
         validation_loss = 0
-        threshold=0.1
+        threshold = 0.5  # Set threshold based on SSIM (adjust based on needs)
+
         with torch.no_grad():
             for _, (data, target) in enumerate(val_loader):
                 data = data.to(device)
-               
-                print(target)
+                
+                # Get model outputs
                 recon_batch, mu, logvar = model(data)
-                # original_images = data.view(-1, 28, 28).cpu().numpy()[:2]
-                # reconstructed_images = recon_batch.view(-1, 28, 28).cpu().numpy()[:2]
-                # # Calculate loss
-                # fig, axes = plt.subplots(2, 2, figsize=(15, 3))
-                # for i in range(2):
-                #     # Original images
-                #     axes[0, i].imshow(original_images[i], cmap='gray')
-                #     axes[0, i].axis('off')
-                #     # Reconstructed images
-                #     axes[1, i].imshow(reconstructed_images[i], cmap='gray')
-                #     axes[1, i].axis('off')
-                # plt.suptitle("Top Row: Original Images | Bottom Row: Reconstructed Images")
-                # plt.show()
+                
+                # Calculate loss
                 loss = loss_function(recon_batch, data, mu, logvar)
                 validation_loss += loss.item()
-               
-                # MSE accuracy
-                mse = F.mse_loss(recon_batch, data.view(-1,784), reduction='none')
-                mse_per_image = mse.view(mse.size(0), -1).mean(dim=1)  # Mean MSE per image
-                correct += (mse_per_image < threshold).sum().item()  # Count images with MSE < threshold
-                total += data.size(0)
-    
-            validation_accuracy = correct / total
-            print(f"Validation Loss: {validation_loss / len(val_loader):.4f}, Validation Accuracy: {validation_accuracy * 100:.2f}%")
-    torch.save(model.state_dict(), vaePath)
+                
+                # Convert images to numpy for SSIM
+                original_images = data.view(-1, 28, 28).cpu().numpy()
+                reconstructed_images = recon_batch.view(-1, 28, 28).cpu().numpy()
+                
+                # Calculate SSIM for each image and compare with threshold
+                ssim_scores = []
+                for original, reconstructed in zip(original_images, reconstructed_images):
+                    ssim_score = ssim(original, reconstructed, data_range=original.max() - original.min())
+                    
+                    ssim_scores.append(ssim_score)
+                    if ssim_score > threshold:
+                        correct += 1  # Count as correct if SSIM is above threshold
+                    total += 1  # Total number of images
+                mean_ssim = sum(ssim_scores) / len(ssim_scores)
+                print(f"Mean SSIM Score: {mean_ssim:.4f}")
 
-    train_latent_vectors, _ = extract_latent_vectors(train_loader, model)
+            # Calculate validation accuracy and loss
+            validation_accuracy = correct / total
+            average_validation_loss = validation_loss / len(val_loader)
+            print(f"Validation Loss: {average_validation_loss:.4f}, Validation Accuracy: {validation_accuracy * 100:.2f}%")
+            if validation_accuracy>best_val_accuracy:  
+                best_val_accuracy=validation_accuracy
+                print("model saved")
+                torch.save(model.state_dict(), vaePath)
+
+    # train_latent_vectors, _ = extract_latent_vectors(train_loader, model)
     
-    initial_means = calculate_initial_means(train_loader, model)
+    # initial_means = calculate_initial_means(train_loader, model)
 
     # Initialize and train GMM
-    gmm = GaussianMixtureModel(n_clusters=3, initial_means=initial_means)
-    gmm.train(train_latent_vectors)
-    save_gmm_parameters(gmm, filename=gmmPath)
+    # gmm = GaussianMixtureModel(n_clusters=3, initial_means=initial_means)
+    # gmm.train(train_latent_vectors)
+    # save_gmm_parameters(gmm, filename=gmmPath)
 
-
+def visualise_latent_space(latent_vectors_2d,labels):
+    plt.figure(figsize=(10, 8))
+    scatter = plt.scatter(latent_vectors_2d[:, 0], latent_vectors_2d[:, 1], c=labels, cmap='viridis', alpha=0.7)
+    plt.colorbar(scatter, label="Class Labels")
+    plt.xlabel("Latent Dimension 1")
+    plt.ylabel("Latent Dimension 2")
+    plt.title("2D Scatter Plot of VAE Latent Space")
+    plt.grid(True)
+    plt.savefig("latent_space_visualise.png")
 
 if __name__ == "__main__":
     # Get command-line arguments
@@ -381,6 +427,9 @@ if __name__ == "__main__":
         vaePath = arg3
         test_dataset_recon = load_mnist_data(path_to_test_dataset_recon)
         test_loader_recon = DataLoader(test_dataset_recon, batch_size=batch_size, shuffle=False)
+        model.load_state_dict(torch.load("vae.pth", map_location=device, weights_only=True))  
+        save_reconstruction(model, test_loader_recon)
+        # show_reconstruction(model,test_loader_recon)
 
     elif len(sys.argv) == 5:  # Class prediction
         path_to_test_dataset = arg1
@@ -407,5 +456,7 @@ if __name__ == "__main__":
         train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePath)
         show_reconstruction(model, val_loader)
         plot_2d_manifold(model, latent_dim=2, n=20, digit_size=28, device=device)
+        latent_vectors,labels=extract_latent_vectors(train_dataset,model)
+        visualise_latent_space(latent_vectors,labels)
 
         

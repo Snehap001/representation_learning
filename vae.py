@@ -87,11 +87,11 @@ class VAE(nn.Module):
         self.bn4 = nn.BatchNorm1d(32)
         
         # Latent variables (mu and logvar)
-        self.fc_mu = nn.Linear(32, 4)    # Latent mu (4-dimensional for better expressiveness)
-        self.fc_logvar = nn.Linear(32, 4) # Latent logvar (4-dimensional)
+        self.fc_mu = nn.Linear(32, 2)    # Latent mu (4-dimensional for better expressiveness)
+        self.fc_logvar = nn.Linear(32, 2) # Latent logvar (4-dimensional)
         
         # Decoder network with Batch Normalization
-        self.fc8 = nn.Linear(4, 32)
+        self.fc8 = nn.Linear(2, 32)
         self.bn8 = nn.BatchNorm1d(32)
         self.fc9 = nn.Linear(32, 128)
         self.bn9 = nn.BatchNorm1d(128)
@@ -102,10 +102,14 @@ class VAE(nn.Module):
         self.fc12 = nn.Linear(512, 784)
 
     def encode(self, x):
-        h1 = F.relu(self.bn1(self.fc1(x)))
-        h2 = F.relu(self.bn2(self.fc2(h1)))
-        h3 = F.relu(self.bn3(self.fc3(h2)))
-        h4 = F.relu(self.bn4(self.fc4(h3)))
+        # h1 = F.relu(self.bn1(self.fc1(x)))
+        # h2 = F.relu(self.bn2(self.fc2(h1)))
+        # h3 = F.relu(self.bn3(self.fc3(h2)))
+        # h4 = F.relu(self.bn4(self.fc4(h3)))
+        h1 = F.relu((self.fc1(x)))
+        h2 = F.relu((self.fc2(h1)))
+        h3 = F.relu((self.fc3(h2)))
+        h4 = F.relu((self.fc4(h3)))
         mu = self.fc_mu(h4)
         logvar = self.fc_logvar(h4)
         return mu, logvar
@@ -116,10 +120,14 @@ class VAE(nn.Module):
         return mu + eps * std
 
     def decode(self, z):
-        h8 = F.relu(self.bn8(self.fc8(z)))    # Latent: 4 -> Hidden: 32
-        h9 = F.relu(self.bn9(self.fc9(h8)))   # Hidden: 32 -> 128
-        h10 = F.relu(self.bn10(self.fc10(h9))) # Hidden: 128 -> 512
-        h11 = F.relu(self.bn11(self.fc11(h10))) # Hidden: 512 -> 512
+        # h8 = F.relu(self.bn8(self.fc8(z)))    # Latent: 4 -> Hidden: 32
+        # h9 = F.relu(self.bn9(self.fc9(h8)))   # Hidden: 32 -> 128
+        # h10 = F.relu(self.bn10(self.fc10(h9))) # Hidden: 128 -> 512
+        # h11 = F.relu(self.bn11(self.fc11(h10))) # Hidden: 512 -> 512
+        h8 = F.relu((self.fc8(z)))    # Latent: 4 -> Hidden: 32
+        h9 = F.relu((self.fc9(h8)))   # Hidden: 32 -> 128
+        h10 = F.relu((self.fc10(h9))) # Hidden: 128 -> 512
+        h11 = F.relu((self.fc11(h10))) # Hidden: 512 -> 512
         h12 = self.fc12(h11) # Hidden: 512 -> Output: 784
         return torch.sigmoid(h12)   # Sigmoid to ensure output is in the range [0, 1]
 
@@ -129,9 +137,6 @@ class VAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         recon_x = self.decode(z)
         return recon_x, mu, logvar
-
-
-
 def loss_function(recon_x, x, mu, logvar):
 
     BCE = F.binary_cross_entropy(recon_x.view(-1, 784), x.view(-1, 784), reduction='sum')

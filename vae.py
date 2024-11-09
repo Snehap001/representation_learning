@@ -150,7 +150,6 @@ class GaussianMixtureModel:
         exponent = -0.5 * torch.dot(diff, torch.mv(cov_inv, diff))
         return torch.exp(exponent) / torch.sqrt(((2 * torch.pi) ** dim) * torch.det(covariance))
     def e_step(self, data):
-        print(data[0].shape)
         responsibilities = torch.zeros((data.shape[0], self.n_clusters))
         for i in range(data.shape[0]):
             for j in range(self.n_clusters):
@@ -201,10 +200,13 @@ class GaussianMixtureModel:
             self.cluster_labels (dict): Dictionary mapping cluster index to the majority label of that cluster.
         """
         # Use the GMM model to predict clusters for the latent vectors
-        cluster_indices = self.predict(val_latent_vectors.cpu().numpy())
+        # cluster_indices = self.predict(val_latent_vectors.cpu().numpy())
+
+        responsibilities = self.e_step(val_latent_vectors.cpu().numpy())
+        cluster_indices=responsibilities.argmax(dim=-1)
 
         # For each cluster, find the majority label
-        for cluster_idx in range(self.gmm_model.n_components):
+        for cluster_idx in range(self.n_clusters):
             # Get the indices of the samples belonging to this cluster
             cluster_samples = val_labels[cluster_indices == cluster_idx]
             
@@ -226,9 +228,9 @@ class GaussianMixtureModel:
             gmm_params = pickle.load(f)
         
         # Set the GMM model parameters
-        self.means = torch.tensor(gmm_params["means"])
-        self.covariances = [torch.tensor(cov) for cov in gmm_params["covariances"]]
-        self.weights = torch.tensor(gmm_params["weights"])
+        self.means = gmm_params["means"]
+        self.covariances = gmm_params["covariances"]
+        self.weights = gmm_params["weights"]
         self.cluster_labels=gmm_params['cluster_labels']
         print(f"GMM parameters loaded from {filename}")
     def predict(self, latent_vectors):
@@ -243,12 +245,10 @@ class GaussianMixtureModel:
         Returns:
             predicted_labels: List of predicted cluster labels for each latent vector.
         """
-        print(latent_vectors)
         responsibilities = self.e_step(latent_vectors)
         cluster_indices=responsibilities.argmax(dim=-1)
-        
         # Map the cluster indices to the actual labels using the cluster_labels dictionary
-        predicted_labels = [self.cluster_labels[index] for index in cluster_indices]
+        predicted_labels = [self.cluster_labels[int(index)] for index in cluster_indices]
         
         # Return the predicted labels
         return predicted_labels
@@ -478,7 +478,7 @@ def test_model(test_loader, vae_model, gmm_model):
     """
     
     # Concatenate all latent vectors
-    latent_vectors = extract_latent_vectors(test_loader,vae_model)
+    latent_vectors,_ = extract_latent_vectors(test_loader,vae_model)
     
     # Map cluster indices to cluster labels
     predicted_labels = gmm_model.predict(latent_vectors.cpu().numpy())

@@ -69,30 +69,43 @@ class FilteredNpzDataset(Dataset):
         # Convert label to a torch tensor
         label = torch.tensor(label, dtype=torch.long)
         return image, label
+
+
+#0.8
 class VAE(nn.Module):
     def __init__(self):
         super(VAE, self).__init__()
-        self.fc1 = nn.Linear(784, 256)  # First layer, input 784, output 256
-        self.fc2 = nn.Linear(256, 128)  # Second layer, input 256, output 128
-        self.fc3 = nn.Linear(128, 64)   # Third layer, input 128, output 64
-        self.fc4 = nn.Linear(64, 16)     # Output layer, input 64, output 2
         
-        self.fc_mu = nn.Linear(16, 2)
-        self.fc_logvar = nn.Linear(16, 2)
-
-        # Decoder network
-        self.fc5 = nn.Linear(2, 16)   # First layer now takes input of size 2
-        self.fc6 = nn.Linear(16, 64)
-        self.fc7 = nn.Linear(64, 128)
-        self.fc8 = nn.Linear(128, 256)
-        self.fc9 = nn.Linear(256, 784)
-
+        # Encoder network with Batch Normalization and Dropout
+        self.fc1 = nn.Linear(784, 512)
+        self.bn1 = nn.BatchNorm1d(512)
+        self.fc2 = nn.Linear(512, 512)
+        self.bn2 = nn.BatchNorm1d(512)
+        self.fc3 = nn.Linear(512, 128)
+        self.bn3 = nn.BatchNorm1d(128)
+        self.fc4 = nn.Linear(128, 32)
+        self.bn4 = nn.BatchNorm1d(32)
+        
+        # Latent variables (mu and logvar)
+        self.fc_mu = nn.Linear(32, 4)    # Latent mu (4-dimensional for better expressiveness)
+        self.fc_logvar = nn.Linear(32, 4) # Latent logvar (4-dimensional)
+        
+        # Decoder network with Batch Normalization
+        self.fc8 = nn.Linear(4, 32)
+        self.bn8 = nn.BatchNorm1d(32)
+        self.fc9 = nn.Linear(32, 128)
+        self.bn9 = nn.BatchNorm1d(128)
+        self.fc10 = nn.Linear(128, 512)
+        self.bn10 = nn.BatchNorm1d(512)
+        self.fc11 = nn.Linear(512, 512)
+        self.bn11 = nn.BatchNorm1d(512)
+        self.fc12 = nn.Linear(512, 784)
 
     def encode(self, x):
-        h1 = F.relu(self.fc1(x))
-        h2 = F.relu(self.fc2(h1))
-        h3 = F.relu(self.fc3(h2))
-        h4 = F.relu(self.fc4(h3))
+        h1 = F.relu(self.bn1(self.fc1(x)))
+        h2 = F.relu(self.bn2(self.fc2(h1)))
+        h3 = F.relu(self.bn3(self.fc3(h2)))
+        h4 = F.relu(self.bn4(self.fc4(h3)))
         mu = self.fc_mu(h4)
         logvar = self.fc_logvar(h4)
         return mu, logvar
@@ -101,15 +114,15 @@ class VAE(nn.Module):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + eps * std
-    
+
     def decode(self, z):
-        h5 = F.relu(self.fc5(z))  # Now expecting latent space size of 2
-        h6 = F.relu(self.fc6(h5))
-        h7 = F.relu(self.fc7(h6))
-        h8 = F.relu(self.fc8(h7))
-        h9 = self.fc9(h8)
-        return torch.sigmoid(h9)  # Sigmoid activation to reconstruct input between 0 and 1
-    
+        h8 = F.relu(self.bn8(self.fc8(z)))    # Latent: 4 -> Hidden: 32
+        h9 = F.relu(self.bn9(self.fc9(h8)))   # Hidden: 32 -> 128
+        h10 = F.relu(self.bn10(self.fc10(h9))) # Hidden: 128 -> 512
+        h11 = F.relu(self.bn11(self.fc11(h10))) # Hidden: 512 -> 512
+        h12 = self.fc12(h11) # Hidden: 512 -> Output: 784
+        return torch.sigmoid(h12)   # Sigmoid to ensure output is in the range [0, 1]
+
     def forward(self, x):
         x = x.view(-1, 784)  # Flatten input images to vectors
         mu, logvar = self.encode(x)
@@ -119,7 +132,6 @@ class VAE(nn.Module):
 
 
 
-# VAE Loss Function
 def loss_function(recon_x, x, mu, logvar):
 
     BCE = F.binary_cross_entropy(recon_x.view(-1, 784), x.view(-1, 784), reduction='sum')
@@ -152,7 +164,9 @@ class GaussianMixtureModel:
         exponent = -0.5 * torch.dot(diff, torch.mv(cov_inv, diff))
         return torch.exp(exponent) / torch.sqrt(((2 * torch.pi) ** dim) * torch.det(covariance))
     def e_step(self, data):
-        responsibilities = torch.zeros((data.shape[0], self.n_clusters))
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        data = data.to(device)  # Move data to device
+        responsibilities = torch.zeros((data.shape[0], self.n_clusters)).to(device)  # Ensure responsibilities are on the correct device
         for i in range(data.shape[0]):
             for j in range(self.n_clusters):
                 responsibilities[i, j] = self.weights[j] * self.gaussian_density(data[i], self.means[j], self.covariances[j])
@@ -160,28 +174,30 @@ class GaussianMixtureModel:
         return responsibilities
     def m_step(self, data, responsibilities):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        data=data.to(device)
-        responsibilities=responsibilities.to(device)
+        data = data.to(device)  # Move data to device
+        responsibilities = responsibilities.to(device)  # Move responsibilities to device
         N_k = responsibilities.sum(0)  # Sum of responsibilities for each cluster
         for k in range(self.n_clusters):
             # Update the mean of the k-th cluster
             self.means[k] = (responsibilities[:, k].unsqueeze(1) * data).sum(0) / N_k[k]
-            
+
             # Compute the difference from the mean
             diff = data - self.means[k]
-            
+
             # Update the covariance matrix for the k-th cluster
             self.covariances[k] = (responsibilities[:, k].unsqueeze(1) * diff).t() @ diff / N_k[k]
-            
+
             # Update the weight of the k-th cluster
             self.weights[k] = N_k[k] / data.size(0)
     def train(self, initial_means, data, max_iters=50, tol=1e-4):
-        self.means = initial_means  # Initialize with validation means
-        self.covariances = [torch.eye(initial_means.size(1)) for _ in range(self.n_clusters)]            
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.means = initial_means.to(device)  # Move initial means to device
+        self.covariances = [torch.eye(initial_means.size(1)).to(device) for _ in range(self.n_clusters)]  # Move covariances to device
+        data = data.to(device)  # Move data to device
+
         for iteration in range(max_iters):
             old_means = self.means.clone()
             responsibilities = self.e_step(data)
-            
             self.m_step(data, responsibilities)
             
             print(f"Iteration {iteration + 1}/{max_iters}")
@@ -191,29 +207,17 @@ class GaussianMixtureModel:
                 break
         return responsibilities
     def set_cluster_labels(self, val_latent_vectors, val_labels):
-        """
-        Assigns a label to each cluster based on the majority class in the provided latent vectors and their true labels.
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        val_latent_vectors = val_latent_vectors.to(device)  # Move validation latent vectors to device
 
-        Args:
-            val_latent_vectors (torch.Tensor): Latent vectors from the validation dataset.
-            val_labels (torch.Tensor): True labels corresponding to the validation dataset.
-
-        Sets:
-            self.cluster_labels (dict): Dictionary mapping cluster index to the majority label of that cluster.
-        """
-        # Use the GMM model to predict clusters for the latent vectors
-        # cluster_indices = self.predict(val_latent_vectors.cpu().numpy())
-
-        responsibilities = self.e_step(val_latent_vectors.cpu().numpy())
-        cluster_indices=responsibilities.argmax(dim=-1)
+        responsibilities = self.e_step(val_latent_vectors.cpu().numpy())  # Use CPU for numpy ops if needed
+        cluster_indices = responsibilities.argmax(dim=-1)
 
         # For each cluster, find the majority label
         for cluster_idx in range(self.n_clusters):
-            # Get the indices of the samples belonging to this cluster
             cluster_samples = val_labels[cluster_indices == cluster_idx]
-            
+
             if len(cluster_samples) > 0:
-                # Find the majority class in the cluster
                 majority_label = Counter(cluster_samples.numpy()).most_common(1)[0][0]
                 self.cluster_labels[cluster_idx] = majority_label
 
@@ -496,16 +500,16 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
                 print("model saved")
                 torch.save(model.state_dict(), vaePath)
 
-    train_latent_vectors, _ = extract_latent_vectors(train_loader, model)
+    # train_latent_vectors, _ = extract_latent_vectors(train_loader, model)
     
-    initial_means = calculate_initial_means(val_loader, model)
+    # initial_means = calculate_initial_means(val_loader, model)
 
-    # Initialize and train GMM
-    gmm = GaussianMixtureModel(n_clusters=3)
-    gmm.train(initial_means,train_latent_vectors)
-    val_latent_vectors, val_labels = extract_latent_vectors(val_loader,model)
-    gmm.set_cluster_labels(val_latent_vectors,val_labels)
-    gmm.save_gmm_parameters(filename=gmmPath)
+    # # Initialize and train GMM
+    # gmm = GaussianMixtureModel(n_clusters=3)
+    # gmm.train(initial_means,train_latent_vectors)
+    # val_latent_vectors, val_labels = extract_latent_vectors(val_loader,model)
+    # gmm.set_cluster_labels(val_latent_vectors,val_labels)
+    # gmm.save_gmm_parameters(filename=gmmPath)
 
 
 def test_model(test_loader, vae_model, gmm_model):

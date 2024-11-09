@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from torchvision import  transforms
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
 import pickle
 import numpy as np
 from collections import Counter
@@ -132,6 +133,7 @@ def load_mnist_data(path, keep_labels=[1, 4, 8]):
     transform = transforms.Compose([transforms.ToTensor()])
     dataset = FilteredNpzDataset(path,keep_labels,transform)
     return dataset
+
 class GaussianMixtureModel:
     def __init__(self, n_clusters):
         self.n_clusters = n_clusters
@@ -173,7 +175,7 @@ class GaussianMixtureModel:
             
             # Update the weight of the k-th cluster
             self.weights[k] = N_k[k] / data.size(0)
-    def train(self, initial_means, data, max_iters=1, tol=1e-4):
+    def train(self, initial_means, data, max_iters=50, tol=1e-4):
         self.means = initial_means  # Initialize with validation means
         self.covariances = [torch.eye(initial_means.size(1)) for _ in range(self.n_clusters)]            
         for iteration in range(max_iters):
@@ -272,7 +274,50 @@ class GaussianMixtureModel:
         with open(filename, "wb") as f:
             pickle.dump(gmm_params, f)
         print(f"GMM parameters saved to {filename}")
+    def plot_gmm_ellipses(self):
+        """
+        Plots each Gaussian distribution in the GMM as an ellipse.
+        
+        Args:
+            means (list or np.ndarray): List or array of cluster centers (means).
+            covariances (list or np.ndarray): List or array of covariance matrices.
+        """
+        plt.figure(figsize=(8, 8))
+        ax = plt.gca()
 
+        # Plot each Gaussian component as an ellipse
+        for i, (mean, cov) in enumerate(zip(self.means, self.covariances)):
+            # Calculate eigenvalues and eigenvectors for the covariance matrix
+            cov = cov.cpu().numpy()
+            mean = mean.cpu().numpy()
+            eigenvalues, eigenvectors = np.linalg.eigh(cov)
+            
+            # Scale the eigenvalues to represent the ellipse's axes lengths
+            axis_length = 2 * np.sqrt(eigenvalues)
+            
+            # Determine the angle for the ellipse rotation (from the first eigenvector)
+            angle = np.degrees(np.arctan2(*eigenvectors[:, 0][::-1]))
+            
+            # Create the ellipse based on the mean, axis length, and angle
+            ellipse = Ellipse(
+                xy=mean,
+                width=axis_length[0],
+                height=axis_length[1],
+                angle=angle,
+                edgecolor='black',
+                facecolor='none',
+                linewidth=1.5
+            )
+            
+            # Plot the ellipse and mark the center
+            ax.add_patch(ellipse)
+            plt.plot(mean[0], mean[1], 'o', markersize=8, label=f'Cluster {i} Mean')
+
+        plt.xlabel("Dimension 1")
+        plt.ylabel("Dimension 2")
+        plt.title("GMM Clusters with Gaussian Ellipses")
+        plt.legend()
+        plt.savefig('gmm_vis.png')
 
 def calculate_initial_means(val_loader, model, keep_labels=[1, 4, 8]):
     """
@@ -510,7 +555,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Hyperparameters
-    num_epochs = 1
+    num_epochs = 50
     learning_rate = 1e-3
     batch_size = 64
 
@@ -542,6 +587,7 @@ if __name__ == "__main__":
         model.load_state_dict(torch.load(vaePath, map_location=device, weights_only=True))  
         gmm = GaussianMixtureModel(n_clusters=3)
         gmm.load_gmm_parameters(gmmPath)
+        gmm.plot_gmm_ellipses()
         test_model(test_loader,model,gmm)
 
 

@@ -2,20 +2,19 @@ import sys
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import pandas as pd
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, random_split
-from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+from torchvision import  transforms
 from torch.utils.data import Dataset
-from PIL import Image
 import matplotlib.pyplot as plt
 import pickle
 import numpy as np
-import torch
-import matplotlib.pyplot as plt
+from collections import Counter
 from scipy.stats import norm
 from skimage.metrics import structural_similarity as ssim
 
-def plot_2d_manifold(vae, latent_dim=2, n=20, digit_size=28, device='cuda'):
+def plot_2d_manifold(vae, n=20, digit_size=28, device='cuda'):
     figure = np.zeros((digit_size * n, digit_size * n))
 
     # Generate a grid of values between 0.05 and 0.95 percentiles of a normal distribution
@@ -42,26 +41,6 @@ def plot_2d_manifold(vae, latent_dim=2, n=20, digit_size=28, device='cuda'):
     plt.axis('off')
     plt.savefig("generated_images.png")
 
-
-def save_gmm_parameters(gmm, filename="gmm.params.pkl"):
-    """
-    Saves the parameters of the GMM model to a file.
-    
-    Args:
-        gmm: Trained Gaussian Mixture Model object.
-        filename: Name of the file to save the parameters to.
-    """
-    # Extract the GMM parameters (assuming your GMM class has attributes like means, covariances, and weights)
-    gmm_params = {
-        "means": gmm.means,  # Replace with your GMM's means attribute
-        "covariances": gmm.covariances,  # Replace with your GMM's covariances attribute
-        "weights": gmm.weights  # Replace with your GMM's weights attribute
-    }
-    
-    # Save the parameters to a pickle file
-    with open(filename, "wb") as f:
-        pickle.dump(gmm_params, f)
-    print(f"GMM parameters saved to {filename}")
 
 
 class FilteredNpzDataset(Dataset):
@@ -148,36 +127,40 @@ def loss_function(recon_x, x, mu, logvar):
     # print(f"KLD: {KLD}")
     return BCE + KLD
 
-
-
 # Loading MNIST data and creating DataLoader
 def load_mnist_data(path, keep_labels=[1, 4, 8]):
     transform = transforms.Compose([transforms.ToTensor()])
     dataset = FilteredNpzDataset(path,keep_labels,transform)
     return dataset
 class GaussianMixtureModel:
-    def __init__(self, n_clusters, initial_means):
+    def __init__(self, n_clusters):
         self.n_clusters = n_clusters
-        self.means = initial_means  # Initialize with validation means
-        self.covariances = [torch.eye(initial_means.size(1)) for _ in range(n_clusters)]
         self.weights = torch.ones(n_clusters) / n_clusters  # Equal initial weights
-
+        self.cluster_labels={}
     def gaussian_density(self, x, mean, covariance):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        mean=mean.to(device)
+        if isinstance(x, np.ndarray):
+            x = torch.from_numpy(x)
+        x=x.to(device)
+        covariance=covariance.to(device)
         dim = mean.size(0)
         cov_inv = torch.inverse(covariance)
         diff = x - mean
         exponent = -0.5 * torch.dot(diff, torch.mv(cov_inv, diff))
         return torch.exp(exponent) / torch.sqrt(((2 * torch.pi) ** dim) * torch.det(covariance))
-
     def e_step(self, data):
-        responsibilities = torch.zeros((data.size(0), self.n_clusters))
-        for i in range(data.size(0)):
+        print(data[0].shape)
+        responsibilities = torch.zeros((data.shape[0], self.n_clusters))
+        for i in range(data.shape[0]):
             for j in range(self.n_clusters):
                 responsibilities[i, j] = self.weights[j] * self.gaussian_density(data[i], self.means[j], self.covariances[j])
             responsibilities[i] /= responsibilities[i].sum()  # Normalize responsibilities
         return responsibilities
-
     def m_step(self, data, responsibilities):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        data=data.to(device)
+        responsibilities=responsibilities.to(device)
         N_k = responsibilities.sum(0)  # Sum of responsibilities for each cluster
         for k in range(self.n_clusters):
             # Update the mean of the k-th cluster
@@ -191,16 +174,106 @@ class GaussianMixtureModel:
             
             # Update the weight of the k-th cluster
             self.weights[k] = N_k[k] / data.size(0)
-
-    def train(self, data, max_iters=100, tol=1e-4):
+    def train(self, initial_means, data, max_iters=1, tol=1e-4):
+        self.means = initial_means  # Initialize with validation means
+        self.covariances = [torch.eye(initial_means.size(1)) for _ in range(self.n_clusters)]            
         for iteration in range(max_iters):
             old_means = self.means.clone()
             responsibilities = self.e_step(data)
+            
             self.m_step(data, responsibilities)
-            print(f"iter :{iteration}")
+            
+            print(f"Iteration {iteration + 1}/{max_iters}")
+            
+            # Check for convergence
             if torch.all(torch.abs(self.means - old_means) < tol):
                 break
         return responsibilities
+    def set_cluster_labels(self, val_latent_vectors, val_labels):
+        """
+        Assigns a label to each cluster based on the majority class in the provided latent vectors and their true labels.
+
+        Args:
+            val_latent_vectors (torch.Tensor): Latent vectors from the validation dataset.
+            val_labels (torch.Tensor): True labels corresponding to the validation dataset.
+
+        Sets:
+            self.cluster_labels (dict): Dictionary mapping cluster index to the majority label of that cluster.
+        """
+        # Use the GMM model to predict clusters for the latent vectors
+        cluster_indices = self.predict(val_latent_vectors.cpu().numpy())
+
+        # For each cluster, find the majority label
+        for cluster_idx in range(self.gmm_model.n_components):
+            # Get the indices of the samples belonging to this cluster
+            cluster_samples = val_labels[cluster_indices == cluster_idx]
+            
+            if len(cluster_samples) > 0:
+                # Find the majority class in the cluster
+                majority_label = Counter(cluster_samples.numpy()).most_common(1)[0][0]
+                self.cluster_labels[cluster_idx] = majority_label
+
+        return self.cluster_labels
+
+    def load_gmm_parameters(self, filename="gmm_params.pkl"):
+        """
+        Loads GMM parameters from a file and initializes the model attributes.
+        
+        Args:
+            filename: Name of the file to load the parameters from.
+        """
+        with open(filename, "rb") as f:
+            gmm_params = pickle.load(f)
+        
+        # Set the GMM model parameters
+        self.means = torch.tensor(gmm_params["means"])
+        self.covariances = [torch.tensor(cov) for cov in gmm_params["covariances"]]
+        self.weights = torch.tensor(gmm_params["weights"])
+        self.cluster_labels=gmm_params['cluster_labels']
+        print(f"GMM parameters loaded from {filename}")
+    def predict(self, latent_vectors):
+        """
+        Predicts the most likely cluster label for each latent vector.
+
+        Args:
+            gmm_model: Trained GMM model for clustering the latent vectors.
+            latent_vectors: Tensor or numpy array of latent vectors from the VAE model.
+            cluster_labels: Dictionary mapping cluster index to cluster label (majority label).
+        
+        Returns:
+            predicted_labels: List of predicted cluster labels for each latent vector.
+        """
+        print(latent_vectors)
+        responsibilities = self.e_step(latent_vectors)
+        cluster_indices=responsibilities.argmax(dim=-1)
+        
+        # Map the cluster indices to the actual labels using the cluster_labels dictionary
+        predicted_labels = [self.cluster_labels[index] for index in cluster_indices]
+        
+        # Return the predicted labels
+        return predicted_labels
+    def save_gmm_parameters(self, filename="gmm.params.pkl"):
+        """
+        Saves the parameters of the GMM model to a file.
+        
+        Args:
+            gmm: Trained Gaussian Mixture Model object.
+            filename: Name of the file to save the parameters to.
+        """
+        # Extract the GMM parameters (assuming your GMM class has attributes like means, covariances, and weights)
+        gmm_params = {
+            "means": self.means,  # Replace with your GMM's means attribute
+            "covariances": self.covariances,  # Replace with your GMM's covariances attribute
+            "weights": self.weights,  # Replace with your GMM's weights attribute
+            "cluster_labels": self.cluster_labels
+        }
+        
+        # Save the parameters to a pickle file
+        with open(filename, "wb") as f:
+            pickle.dump(gmm_params, f)
+        print(f"GMM parameters saved to {filename}")
+
+
 def calculate_initial_means(val_loader, model, keep_labels=[1, 4, 8]):
     """
     Calculate initial means for each digit class to initialize GMM clusters.
@@ -213,6 +286,7 @@ def calculate_initial_means(val_loader, model, keep_labels=[1, 4, 8]):
     Returns:
         initial_means: Tensor containing the initial mean for each digit class.
     """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     latent_vectors = {label: [] for label in keep_labels}
     
@@ -220,6 +294,7 @@ def calculate_initial_means(val_loader, model, keep_labels=[1, 4, 8]):
     with torch.no_grad():
         for data, target in val_loader:
             data = data.view(-1, 784)  # Flatten MNIST images to 784-dimensional vectors
+            data=data.to(device)
             mu, _ = model.encode(data)  # Get the mean (mu) from the VAE encoder
             
             for label in keep_labels:
@@ -257,7 +332,7 @@ def show_reconstruction(model, val_loader, n=15):
 def save_reconstruction(model,val_loader):
     model.eval()
     data, labels = next(iter(val_loader))
-    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
     data = data.to(device)
     recon_data, _, _ = model(data)
     recon_data_np = recon_data.cpu().detach().numpy()
@@ -270,7 +345,7 @@ def extract_latent_vectors(data_loader, model):
     latent_vectors = []
     labels = []
     model.eval()  # Set model to evaluation mode
-    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
     with torch.no_grad():
         for data, target in data_loader:
             # Ensure the batch is not empty
@@ -311,7 +386,6 @@ def classify_image(image, vae_model, gmm_model):
             max_likelihood = likelihood
             label = i
     return label
-
 def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePath):
     # Training loop (example)
     model.to(device)
@@ -371,21 +445,48 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
 
             # Calculate validation accuracy and loss
             validation_accuracy = correct / total
-            average_validation_loss = validation_loss / len(val_loader)
             print(f"Validation Accuracy: {validation_accuracy * 100:.2f}%")
             if validation_accuracy>best_val_accuracy:  
                 best_val_accuracy=validation_accuracy
                 print("model saved")
                 torch.save(model.state_dict(), vaePath)
 
-    # train_latent_vectors, _ = extract_latent_vectors(train_loader, model)
+    train_latent_vectors, _ = extract_latent_vectors(train_loader, model)
     
-    # initial_means = calculate_initial_means(train_loader, model)
+    initial_means = calculate_initial_means(val_loader, model)
 
     # Initialize and train GMM
-    # gmm = GaussianMixtureModel(n_clusters=3, initial_means=initial_means)
-    # gmm.train(train_latent_vectors)
-    # save_gmm_parameters(gmm, filename=gmmPath)
+    gmm = GaussianMixtureModel(n_clusters=3)
+    gmm.train(initial_means,train_latent_vectors)
+    val_latent_vectors, val_labels = extract_latent_vectors(val_loader,model)
+    gmm.set_cluster_labels(val_latent_vectors,val_labels)
+    gmm.save_gmm_parameters(filename=gmmPath)
+
+
+def test_model(test_loader, vae_model, gmm_model):
+    """
+    Predicts the most likely cluster label for each example in the test set.
+
+    Args:
+        test_loader: DataLoader for the test dataset.
+        vae_model: Trained VAE model with an encoder for generating latent vectors.
+        gmm_model: Trained GMM model for clustering the latent vectors.
+        cluster_labels: Dictionary mapping cluster index to cluster label (majority label).
+    
+    Returns:
+        predicted_labels: List of predicted cluster labels for each example in the test set.
+    """
+    
+    # Concatenate all latent vectors
+    latent_vectors = extract_latent_vectors(test_loader,vae_model)
+    
+    # Map cluster indices to cluster labels
+    predicted_labels = gmm_model.predict(latent_vectors.cpu().numpy())
+    
+    # Save the predicted labels to a CSV file
+    df = pd.DataFrame(predicted_labels, columns=["Predicted_Label"])
+    df.to_csv("vae.csv", index=False)
+
 
 def visualise_latent_space(latent_vectors_2d,labels):
     plt.figure(figsize=(10, 8))
@@ -409,10 +510,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Hyperparameters
-    input_dim = 784  # 28x28 images flattened to 784 dimensions
-    hidden_dim = 512
-    latent_dim = 2
-    num_epochs = 50
+    num_epochs = 1
     learning_rate = 1e-3
     batch_size = 64
 
@@ -429,8 +527,8 @@ if __name__ == "__main__":
         test_reconstruction = arg2
         vaePath = arg3
         test_dataset_recon = load_mnist_data(path_to_test_dataset_recon)
-        test_loader_recon = DataLoader(test_dataset_recon, batch_size=batch_size, shuffle=False)
-        model.load_state_dict(torch.load("vae.pth", map_location=device, weights_only=True))  
+        test_loader_recon = DataLoader(test_dataset_recon, batch_size=batch_size, shuffle=False,num_workers=4)
+        model.load_state_dict(torch.load(vaePath, map_location=device, weights_only=True))  
         save_reconstruction(model, test_loader_recon)
         # show_reconstruction(model,test_loader_recon)
 
@@ -440,7 +538,13 @@ if __name__ == "__main__":
         vaePath = arg3
         gmmPath = arg4
         test_dataset = load_mnist_data(path_to_test_dataset)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,num_workers=4)
+        model.load_state_dict(torch.load(vaePath, map_location=device, weights_only=True))  
+        gmm = GaussianMixtureModel(n_clusters=3)
+        gmm.load_gmm_parameters(gmmPath)
+        test_model(test_loader,model,gmm)
+
+
 
     else:  # Training phase
         path_to_train_dataset = arg1
@@ -453,13 +557,11 @@ if __name__ == "__main__":
         val_dataset = load_mnist_data(path_to_val_dataset)
         # Split the training data into training and validation datasets (e.g., 80% train, 20% val)
 
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,num_workers=4)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,num_workers=4)
         print("Training...")
         train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePath)
-        show_reconstruction(model, val_loader)
-        plot_2d_manifold(model, latent_dim=2, n=20, digit_size=28, device=device)
-        latent_vectors,labels=extract_latent_vectors(train_dataset,model)
-        visualise_latent_space(latent_vectors,labels)
-
-        
+        # show_reconstruction(model, val_loader)
+        # plot_2d_manifold(model, n=20, digit_size=28, device=device)
+        # latent_vectors,labels=extract_latent_vectors(train_dataset,model)
+        # visualise_latent_space(latent_vectors,labels)

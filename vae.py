@@ -15,6 +15,8 @@ from collections import Counter
 from scipy.stats import norm
 from skimage.metrics import structural_similarity as ssim
 
+torch.manual_seed(0)
+
 def plot_2d_manifold(vae, n=20, digit_size=28, device='cuda'):
     figure = np.zeros((digit_size * n, digit_size * n))
 
@@ -71,45 +73,27 @@ class FilteredNpzDataset(Dataset):
         return image, label
 
 
-#0.8
+#0.89 f1 score
 class VAE(nn.Module):
     def __init__(self):
         super(VAE, self).__init__()
-        
-        # Encoder network with Batch Normalization and Dropout
-        self.fc1 = nn.Linear(784, 512)
-        self.bn1 = nn.BatchNorm1d(512)
-        self.fc2 = nn.Linear(512, 512)
-        self.bn2 = nn.BatchNorm1d(512)
-        self.fc3 = nn.Linear(512, 128)
-        self.bn3 = nn.BatchNorm1d(128)
-        self.fc4 = nn.Linear(128, 32)
-        self.bn4 = nn.BatchNorm1d(32)
-        
-        # Latent variables (mu and logvar)
-        self.fc_mu = nn.Linear(32, 2)    # Latent mu (4-dimensional for better expressiveness)
-        self.fc_logvar = nn.Linear(32, 2) # Latent logvar (4-dimensional)
-        
-        # Decoder network with Batch Normalization
-        self.fc8 = nn.Linear(2, 32)
-        self.bn8 = nn.BatchNorm1d(32)
-        self.fc9 = nn.Linear(32, 128)
-        self.bn9 = nn.BatchNorm1d(128)
-        self.fc10 = nn.Linear(128, 512)
-        self.bn10 = nn.BatchNorm1d(512)
-        self.fc11 = nn.Linear(512, 512)
-        self.bn11 = nn.BatchNorm1d(512)
-        self.fc12 = nn.Linear(512, 784)
+        self.fc1 = nn.Linear(784, 256)  # First layer, input 784, output 256
+        self.fc2 = nn.Linear(256, 128)  # Second layer, input 256, output 128
+        self.fc3 = nn.Linear(128, 64)   # Third layer, input 128, output 64
+        self.fc4 = nn.Linear(64, 16)     # Output layer, input 64, output 2
+        self.fc_mu = nn.Linear(16, 2)
+        self.fc_logvar = nn.Linear(16, 2)
+        self.fc5 = nn.Linear(2, 16)   # First layer now takes input of size 2
+        self.fc6 = nn.Linear(16, 64)
+        self.fc7 = nn.Linear(64, 128)
+        self.fc8 = nn.Linear(128, 256)
+        self.fc9 = nn.Linear(256, 784)
 
     def encode(self, x):
-        # h1 = F.relu(self.bn1(self.fc1(x)))
-        # h2 = F.relu(self.bn2(self.fc2(h1)))
-        # h3 = F.relu(self.bn3(self.fc3(h2)))
-        # h4 = F.relu(self.bn4(self.fc4(h3)))
-        h1 = F.relu((self.fc1(x)))
-        h2 = F.relu((self.fc2(h1)))
-        h3 = F.relu((self.fc3(h2)))
-        h4 = F.relu((self.fc4(h3)))
+        h1 = F.relu(self.fc1(x))
+        h2 = F.relu(self.fc2(h1))
+        h3 = F.relu(self.fc3(h2))
+        h4 = F.relu(self.fc4(h3))
         mu = self.fc_mu(h4)
         logvar = self.fc_logvar(h4)
         return mu, logvar
@@ -120,23 +104,23 @@ class VAE(nn.Module):
         return mu + eps * std
 
     def decode(self, z):
-        # h8 = F.relu(self.bn8(self.fc8(z)))    # Latent: 4 -> Hidden: 32
-        # h9 = F.relu(self.bn9(self.fc9(h8)))   # Hidden: 32 -> 128
-        # h10 = F.relu(self.bn10(self.fc10(h9))) # Hidden: 128 -> 512
-        # h11 = F.relu(self.bn11(self.fc11(h10))) # Hidden: 512 -> 512
-        h8 = F.relu((self.fc8(z)))    # Latent: 4 -> Hidden: 32
-        h9 = F.relu((self.fc9(h8)))   # Hidden: 32 -> 128
-        h10 = F.relu((self.fc10(h9))) # Hidden: 128 -> 512
-        h11 = F.relu((self.fc11(h10))) # Hidden: 512 -> 512
-        h12 = self.fc12(h11) # Hidden: 512 -> Output: 784
-        return torch.sigmoid(h12)   # Sigmoid to ensure output is in the range [0, 1]
-
+        h5 = F.relu(self.fc5(z))  # Now expecting latent space size of 2
+        h6 = F.relu(self.fc6(h5))
+        h7 = F.relu(self.fc7(h6))
+        h8 = F.relu(self.fc8(h7))
+        h9 = self.fc9(h8)
+        return torch.sigmoid(h9)  # Sigmoid activation to reconstruct input between 0 and 1
     def forward(self, x):
         x = x.view(-1, 784)  # Flatten input images to vectors
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
         recon_x = self.decode(z)
         return recon_x, mu, logvar
+# Loading MNIST data and creating DataLoader
+def load_mnist_data(path, keep_labels=[1, 4, 8]):
+    transform = transforms.Compose([transforms.ToTensor()])
+    dataset = FilteredNpzDataset(path,keep_labels,transform)
+    return dataset
 def loss_function(recon_x, x, mu, logvar):
 
     BCE = F.binary_cross_entropy(recon_x.view(-1, 784), x.view(-1, 784), reduction='sum')
@@ -144,12 +128,6 @@ def loss_function(recon_x, x, mu, logvar):
     # print(f"BCE: {BCE}")
     # print(f"KLD: {KLD}")
     return BCE + KLD
-
-# Loading MNIST data and creating DataLoader
-def load_mnist_data(path, keep_labels=[1, 4, 8]):
-    transform = transforms.Compose([transforms.ToTensor()])
-    dataset = FilteredNpzDataset(path,keep_labels,transform)
-    return dataset
 
 class GaussianMixtureModel:
     def __init__(self, n_clusters):
@@ -164,13 +142,17 @@ class GaussianMixtureModel:
         x=x.to(device)
         covariance=covariance.to(device)
         dim = mean.size(0)
-        cov_inv = torch.inverse(covariance)
+        cov_inv = torch.pinverse(covariance)
         diff = x - mean
         exponent = -0.5 * torch.dot(diff, torch.mv(cov_inv, diff))
         return torch.exp(exponent) / torch.sqrt(((2 * torch.pi) ** dim) * torch.det(covariance))
     def e_step(self, data):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        data = data.to(device)  # Move data to device
+        
+        if isinstance(data, np.ndarray):
+            data = torch.from_numpy(data).to(device)  # Move data to device (GPU/CPU)
+        else:
+            data = data.to(device)  # Move data to device
         responsibilities = torch.zeros((data.shape[0], self.n_clusters)).to(device)  # Ensure responsibilities are on the correct device
         for i in range(data.shape[0]):
             for j in range(self.n_clusters):
@@ -208,22 +190,24 @@ class GaussianMixtureModel:
             print(f"Iteration {iteration + 1}/{max_iters}")
             
             # Check for convergence
-            if torch.all(torch.abs(self.means - old_means) < tol):
-                break
+            # if torch.all(torch.abs(self.means - old_means) < tol):
+            #     break
         return responsibilities
     def set_cluster_labels(self, val_latent_vectors, val_labels):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        val_latent_vectors = val_latent_vectors.to(device)  # Move validation latent vectors to device
 
+        val_latent_vectors = val_latent_vectors.to(device)  # Move validation latent vectors to device
+        val_labels=val_labels.to(device)
         responsibilities = self.e_step(val_latent_vectors.cpu().numpy())  # Use CPU for numpy ops if needed
         cluster_indices = responsibilities.argmax(dim=-1)
 
         # For each cluster, find the majority label
         for cluster_idx in range(self.n_clusters):
+
             cluster_samples = val_labels[cluster_indices == cluster_idx]
 
             if len(cluster_samples) > 0:
-                majority_label = Counter(cluster_samples.numpy()).most_common(1)[0][0]
+                majority_label = Counter(cluster_samples.cpu().numpy()).most_common(1)[0][0]
                 self.cluster_labels[cluster_idx] = majority_label
 
         return self.cluster_labels
@@ -410,7 +394,7 @@ def extract_latent_vectors(data_loader, model):
             data = data.to(device).view(-1, 784)
             
             # Pass data through the encoder to get the mean (mu) of the latent distribution
-            mu, _ = model.encode(data)
+            mu, _= model.encode(data)
             if mu.dim() == 0:
                 mu = mu.unsqueeze(0)  # Add a dimension to make it 1-dimensional
             
@@ -448,6 +432,7 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
         print(f"Epoch {epoch+1} started")
         model.train()
         train_loss = 0
+
         for _, (data, target) in enumerate(train_loader):
 
             data = data.to(device)
@@ -464,7 +449,6 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
         model.eval()
         correct = 0
         total = 0
-        validation_loss = 0
         threshold = 0.5  # Set threshold based on SSIM (adjust based on needs)
 
         with torch.no_grad():
@@ -476,7 +460,6 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
                 
                 # Calculate loss
                 loss = loss_function(recon_batch, data, mu, logvar)
-                validation_loss += loss.item()
                 
                 # Convert images to numpy for SSIM
                 original_images = data.view(-1, 28, 28).cpu().numpy()
@@ -496,25 +479,23 @@ def train_model(train_loader,num_epochs,model,device,optimizer,val_loader,vaePat
                 mean_ssim = sum(ssim_scores) / len(ssim_scores)
                 print(f"Mean SSIM Score: {mean_ssim:.4f}")
                 print("1- Mean Squared Error:", 1-mse.item())
-
-            # Calculate validation accuracy and loss
             validation_accuracy = correct / total
             print(f"Validation Accuracy: {validation_accuracy * 100:.2f}%")
+            # Calculate validation accuracy and loss
             if validation_accuracy>best_val_accuracy:  
                 best_val_accuracy=validation_accuracy
                 print("model saved")
                 torch.save(model.state_dict(), vaePath)
 
-    # train_latent_vectors, _ = extract_latent_vectors(train_loader, model)
-    
-    # initial_means = calculate_initial_means(val_loader, model)
+    val_latent_vectors, val_labels = extract_latent_vectors(val_loader,model)
+
+    initial_means = calculate_initial_means(val_loader, model)
 
     # # Initialize and train GMM
-    # gmm = GaussianMixtureModel(n_clusters=3)
-    # gmm.train(initial_means,train_latent_vectors)
-    # val_latent_vectors, val_labels = extract_latent_vectors(val_loader,model)
-    # gmm.set_cluster_labels(val_latent_vectors,val_labels)
-    # gmm.save_gmm_parameters(filename=gmmPath)
+    gmm = GaussianMixtureModel(n_clusters=3)
+    gmm.train(initial_means,val_latent_vectors)
+    gmm.set_cluster_labels(val_latent_vectors,val_labels)
+    gmm.save_gmm_parameters(filename=gmmPath)
 
 
 def test_model(test_loader, vae_model, gmm_model):
